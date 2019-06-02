@@ -2,25 +2,47 @@ module Main exposing (main)
 
 import Browser
 import Browser.Events exposing (onKeyDown)
+import Browser.Dom
 import Html exposing (..)
-import Html.Events exposing (onClick)
-import Html.Attributes exposing (placeholder)
+import Html.Events exposing (onClick, onFocus, onBlur)
+import Html.Attributes exposing (..)
 import Json.Decode as JDecode
 import Time
 import Task
 import Process
 
 -- Model
+
 type alias Model = 
-  { status : Status
-  , recording : String
-  , buffer : List Key
+  { recorder : Recorder
+  , player : Player
   }
 
-type alias Key = (String, Time.Posix)
+initModel : Model
+initModel = {recorder = initRecorder, player = initPlayer}
 
 
-type Status = Recording | Playing | None
+-- Recorder
+
+type alias Recorder = {recording : Bool, hasFocus: Bool, record : List KeyStroke}
+
+type alias KeyStroke = (String, Time.Posix)
+
+initRecorder : Recorder
+initRecorder = Recorder False False []
+
+
+-- Player
+
+type alias Player = {track : String, playerStatus : PlayerStatus}
+
+type PlayerStatus = Playing | Paused | Stopped
+
+initPlayer : Player
+initPlayer = Player "" Stopped
+
+
+-- Init
 
 type alias Flags = ()
 
@@ -28,51 +50,72 @@ init : Flags -> (Model, Cmd Msg)
 init _ = (initModel, Cmd.none)
 
 
-initModel : Model
-initModel = {status = None, recording = "", buffer = []}
-
 -- Update
 
-type Msg = ToggleRecording | RecordKey String | ResetBuffer | KeyTime String Time.Posix | Play | PlayRecording String
+type Msg 
+  = ToggleRecording 
+  | RecordKeyStroke String 
+  | ResetRecord
+  | KeyStroke String Time.Posix 
+  | PlayRecord 
+  | Play String
+  | FocusTypeRecorder (Result Browser.Dom.Error ())
+  | FocusOnRecorder
+  | BlurOnRecorder
 
 update : Msg -> Model -> (Model, Cmd Msg)
-update msg model = 
+update msg ({recorder, player} as model) = 
   case msg of
-    ToggleRecording -> ({model | status = toggleStatus model.status}, Cmd.none)
+    ToggleRecording -> 
+      let
+        recording = not recorder.recording
+      in
+        if recording then
+          ({model | recorder = { recorder | recording = recording }}, Task.attempt FocusTypeRecorder (Browser.Dom.focus "type-recorder"))
+        else
+          ({model | recorder = { recorder | recording = recording }}, Cmd.none) 
 
-    RecordKey key -> (model, Task.perform (KeyTime key) Time.now)
+    FocusTypeRecorder (Err _) -> (model, Cmd.none)
 
-    KeyTime key time -> ({model | buffer = model.buffer ++ [(key, time)]}, Cmd.none)
+    FocusTypeRecorder (Ok _) -> (model, Cmd.none)
 
-    ResetBuffer -> ({model | buffer = []}, Cmd.none)
+    RecordKeyStroke key -> ( model, Task.perform (KeyStroke key) Time.now)
 
-    Play -> 
+    KeyStroke key time -> 
+      if model.recorder.hasFocus && model.recorder.recording then
+        ( {model | recorder = {recorder | record = recorder.record ++ [(key, time)]}}, Cmd.none)
+      else
+        (model, Cmd.none)
+
+    ResetRecord -> 
+      ({model | recorder = {recorder| recording = False, record = []}, player = {track = "", playerStatus = Stopped}}, Cmd.none)
+
+    FocusOnRecorder ->
+      ({model | recorder = {recorder | hasFocus = True}}, Cmd.none)
+
+    BlurOnRecorder ->
+      ({model | recorder = {recorder | hasFocus = False}}, Cmd.none)
+
+    PlayRecord -> 
       let
         start : Float
-        start = case model.buffer of
+        start = case model.recorder.record of
            [] -> 0
            (_, posix) :: _ -> toFloat <| Time.posixToMillis posix
       in
-      ( model
-      , Cmd.batch
-      <| List.map (\(key, posix) -> Task.perform (always <| PlayRecording key) <| Process.sleep ((toFloat <| Time.posixToMillis posix) - start))
-      <| model.buffer
-      )
+        ( {model | player = {player | playerStatus = Playing }}
+        , Cmd.batch
+        <| List.map (\(key, posix) -> Task.perform (always <| Play key) <| Process.sleep ((toFloat <| Time.posixToMillis posix) - start))
+        <| model.recorder.record
+        )
 
 
-    PlayRecording s -> ({model | recording = model.recording ++ s }, Cmd.none)
+    Play s -> ({model | player = {player | track = player.track ++ s }}, Cmd.none)
 
-
-toggleStatus : Status -> Status
-toggleStatus status =
-  case status of
-    Recording -> None
-    None -> Recording
-    _ -> status
 
 -- Subscription
 subscriptions : Model -> Sub Msg
-subscriptions _ = onKeyDown (JDecode.map RecordKey keyDecoder)
+subscriptions _ = onKeyDown (JDecode.map RecordKeyStroke keyDecoder)
 
 keyDecoder : JDecode.Decoder String
 keyDecoder = JDecode.field "key" JDecode.string
@@ -84,19 +127,18 @@ view model =
   { title = "Typing Recorder"
   , body = 
     [ h1 [] [text "Typing Recorder"]
-    , button [onClick ToggleRecording] [text <| if model.status == Recording then "Stop" else "Start recording"]
-    , button [onClick ResetBuffer] [text "Reset recording"]
-    , button [onClick Play] [text "Play"]
-    , textarea [placeholder "type your text here..."] []
-    , displayBuffer model.buffer
-    , div [] [text model.recording]
+    , button [onClick ToggleRecording] [text <| if model.recorder.recording then "Stop" else "Start"]
+    , button [onClick ResetRecord] [text "Reset recording"]
+    , button [onClick PlayRecord] [text "Play"]
+    , textarea [ id "type-recorder"
+               , placeholder "type your text here..."
+               , value model.player.track
+               , onFocus FocusOnRecorder
+               , onBlur BlurOnRecorder
+               , disabled (model.player.playerStatus == Playing && not model.recorder.recording)
+               ] []
     ]
   }
-
-displayBuffer : List Key -> Html Msg
-displayBuffer buffer =
-  div [] [text <| String.concat <| List.map Tuple.first buffer]
-
 
 main : Program Flags Model Msg
 main = Browser.document
