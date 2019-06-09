@@ -174,7 +174,7 @@ view model =
     { title = "Typing Recorder"
     , body =
         [ h1 [] [ text "Typing Recorder" ]
-        , button [ onMouseDown ToggleRecording, disabled (not (recordable model || modelt.player.playerStatus == Recording)) ]
+        , button [ onMouseDown ToggleRecording, disabled (not (recordable model || model.player.playerStatus == Recording)) ]
             [ text <|
                 if model.player.playerStatus == Recording then
                     "Stop"
